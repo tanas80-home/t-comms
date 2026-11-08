@@ -1,6 +1,7 @@
 """Public HTTPS through a loopback proxy retains browser and MCP boundaries."""
 
 import asyncio
+import io
 import json
 from urllib.parse import urlsplit
 
@@ -11,6 +12,7 @@ from fastapi.testclient import TestClient
 from mcp import Client
 from mcp.client.streamable_http import streamable_http_client
 
+from agent_comms import cli
 from agent_comms.api import create_app
 
 ORIGIN = "https://comms.example.test"
@@ -136,3 +138,28 @@ def test_public_mcp_question_human_reply_and_project_context(env):
             assert all(p["id"] != hidden["id"] for p in updates["posts"])
 
     asyncio.run(go())
+
+
+@pytest.mark.parametrize("origin", [ORIGIN, "https://other.test", "http://127.0.0.1:8787"])
+def test_dashboard_cli_accepts_only_the_configured_public_login_origin(
+    env, monkeypatch, origin
+):
+    env.settings.public_origin = ORIGIN
+    with TestClient(create_app(env.board)) as server:
+        def urlopen(request, timeout):
+            assert request.full_url == "http://127.0.0.1:8787/api/login-links"
+            reply = server.post(
+                "/api/login-links",
+                headers={"Authorization": request.get_header("Authorization")})
+            assert reply.status_code == 200
+            payload = reply.json()
+            payload["url"] = payload["url"].replace(ORIGIN, origin, 1)
+            return io.BytesIO(json.dumps(payload).encode())
+
+        monkeypatch.setattr("urllib.request.urlopen", urlopen)
+        if origin == ORIGIN:
+            assert cli._login_link(env.settings, env.tokens["human"]).startswith(
+                ORIGIN + "/login/")
+        else:
+            with pytest.raises(SystemExit, match="unexpected sign-in link"):
+                cli._login_link(env.settings, env.tokens["human"])
