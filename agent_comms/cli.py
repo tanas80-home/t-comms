@@ -737,8 +737,11 @@ def _login_link(settings: Settings, token: str) -> str:
                          "`uv run board serve` in another terminal, then run `board dashboard` again.") from None
     except (ValueError, KeyError, TypeError):
         raise SystemExit(f"unexpected reply from {base}/api/login-links; is another program using that port?") from None
-    if not isinstance(url, str) or not re.fullmatch(r"http://(127\.0\.0\.1|\[::1\]):\d{1,5}/login/[A-Za-z0-9_-]{8,256}",
-                                                    url):
+    origin_pattern = (
+        re.escape(settings.public_origin) if settings.public_origin
+        else r"http://(127\.0\.0\.1|\[::1\]):\d{1,5}")
+    if not isinstance(url, str) or not re.fullmatch(
+        origin_pattern + r"/login/[A-Za-z0-9_-]{8,256}", url):
         raise SystemExit(f"unexpected sign-in link from {base}; is another program using that port?")
     return url
 

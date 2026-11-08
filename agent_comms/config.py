@@ -82,6 +82,8 @@ def human_token_file() -> Path:
 class Settings:
     host: str = "127.0.0.1"
     port: int = 8787
+    # Optional HTTPS origin behind a loopback reverse proxy.
+    public_origin: str = ""
     # [server] hub: on a machine that is not the hub, the hub's gateway URL; `board mcp` and `board brief` then talk to
     # it instead of a local database (remote.py). Empty on the hub itself.
     hub: str = ""

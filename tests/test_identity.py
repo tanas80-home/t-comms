@@ -1,3 +1,4 @@
+import os
 import asyncio
 import json
 
@@ -135,3 +136,13 @@ def test_mcp_http_transport_uses_bearer_token(env):
     assert tools == EXPECTED_TOOLS
     assert reg["agent"] == "codex"
     assert upd["posts"] == []
+
+
+def test_atomic_token_rotation_revokes_even_when_mtime_is_preserved(env):
+    path = env.settings.agents_path
+    before = path.stat()
+    rotated = create_agent(path, "codex", "codex-cli", rotate=True)
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    with pytest.raises(Unauthorized):
+        env.board.authenticate(env.tokens["codex"])
+    assert env.board.authenticate(rotated).name == "codex"

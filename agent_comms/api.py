@@ -7,11 +7,13 @@ import math
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, Query, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import StrictBool, StrictInt, BaseModel, ConfigDict
+from mcp.server.transport_security import TransportSecuritySettings
 
 from . import capabilities, requests, attention, board_settings, dispatch, human_actions, issues, resolve, summary, unstick, weblogin, workstreams
 from .config import Settings
@@ -277,8 +279,32 @@ def create_app(board: Board | None = None, settings: Settings | None = None, *,
                mcp_instructions: str = INSTRUCTIONS) -> FastAPI:
     settings = settings or (board.s if board else Settings.load())
     board = board or Board(settings)
+    origin = settings.public_origin
+    public = urlsplit(origin)
+    if origin and (
+        public.scheme != "https" or not public.hostname
+        or public.username is not None or public.password is not None
+        or public.path or public.query or public.fragment
+    ):
+        raise ValueError(
+            "public_origin must be an HTTPS origin without credentials or a path")
+    # urllib rejects malformed ports before the listener starts.
+    public_port = public.port
+    transport_security = None
+    if origin:
+        transport_security = TransportSecuritySettings(
+            allowed_hosts=["127.0.0.1:*", "localhost:*", "[::1]:*", public.netloc],
+            allowed_origins=[
+                "http://127.0.0.1:*", "http://localhost:*", "http://[::1]:*", origin],
+        )
     mcp = build_mcp(board, "http", instructions=mcp_instructions)
-    mcp_app = mcp.streamable_http_app(streamable_http_path="/mcp", host=settings.host)
+    mcp_app = mcp.streamable_http_app(
+        streamable_http_path="/mcp", host=settings.host,
+        transport_security=transport_security)
+
+    def public_request(request: Request) -> bool:
+        return bool(
+            origin and request.headers.get("host", "").lower() == public.netloc.lower())
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -299,7 +325,7 @@ def create_app(board: Board | None = None, settings: Settings | None = None, *,
         # Host check defeats DNS rebinding from a browser tab; bearer tokens are still required on top.
         host = request.headers.get("host", "")
         hostname = host[1:].split("]")[0] if host.startswith("[") else host.split(":")[0]
-        if not loopback or hostname not in LOCAL_HOSTNAMES:
+        if not loopback or (hostname not in LOCAL_HOSTNAMES and not public_request(request)):
             return JSONResponse({"error": "forbidden", "message": "agent-comms only serves localhost"}, 403)
         return await call_next(request)
 
@@ -310,6 +336,8 @@ def create_app(board: Board | None = None, settings: Settings | None = None, *,
         return JSONResponse({"error": e.code, "message": e.message, **extra}, status_code=e.status)
 
     def port_of(request: Request) -> int:
+        if public_request(request):
+            return public_port or 443
         return request.url.port or settings.port
 
     def session_cookie(request: Request) -> str | None:
@@ -322,13 +350,17 @@ def create_app(board: Board | None = None, settings: Settings | None = None, *,
         if request.headers.get(CSRF_HEADER) != "1":
             raise Forbidden("cookie-authenticated requests need the X-Board-Request: 1 header")
         origin = request.headers.get("origin")
-        if origin is not None and origin != f"http://{request.headers.get('host', '')}":
+        expected_origin = (
+            settings.public_origin if public_request(request)
+            else f"http://{request.headers.get('host', '')}")
+        if origin is not None and origin != expected_origin:
             raise Forbidden("cross-origin request refused")
 
     def set_session_cookie(response: Response, request: Request, secret: str, max_age: int) -> None:
-        # Not Secure: Safari does not keep Secure cookies set over http://127.0.0.1 (DESIGN_NOTES "Dashboard sign-in").
-        response.set_cookie(weblogin.cookie_name(port_of(request)), secret, max_age=max_age, path="/",
-                            httponly=True, samesite="strict")
+        # Preserve local HTTP sign-in; the configured public HTTPS origin requires Secure.
+        response.set_cookie(
+            weblogin.cookie_name(port_of(request)), secret, max_age=max_age, path="/",
+            httponly=True, samesite="strict", secure=public_request(request))
 
     def clear_session_cookie(response: Response, request: Request) -> None:
         response.delete_cookie(weblogin.cookie_name(port_of(request)), path="/", httponly=True, samesite="strict")
@@ -392,10 +424,11 @@ def create_app(board: Board | None = None, settings: Settings | None = None, *,
         if request.state.auth != "bearer":
             raise Forbidden("sign-in links need the human bearer token")
         code = weblogin.create_link(board, p, body.next if body else "/")
-        # Contract (menu bar app, CLI): exactly http://127.0.0.1:<port>/login/<code>, no query and no fragment.
-        # The cookie is per host, so every sign-in lands on 127.0.0.1. Only a board bound to ::1 differs.
+        # The public origin is explicit; otherwise preserve native loopback sign-in.
+        # Neither form includes a query or fragment.
         host = "[::1]" if settings.host == "::1" else "127.0.0.1"
-        return {"url": f"http://{host}:{port_of(request)}/login/{code}",
+        login_origin = settings.public_origin or f"http://{host}:{port_of(request)}"
+        return {"url": f"{login_origin}/login/{code}",
                 "expires_in_seconds": weblogin.LINK_TTL_SECONDS}
 
     @app.get("/login/{code}", include_in_schema=False)
@@ -831,4 +864,6 @@ def serve(host: str | None = None, port: int | None = None) -> None:
     host = host or settings.host
     if host not in ("127.0.0.1", "localhost", "::1"):
         raise SystemExit("agent-comms v1 only binds to localhost")
-    uvicorn.run(create_app(settings=settings), host=host, port=port or settings.port, log_level="info")
+    uvicorn.run(
+        create_app(settings=settings), host=host, port=port or settings.port,
+        log_level="info", proxy_headers=False, access_log=False)
