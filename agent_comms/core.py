@@ -126,7 +126,7 @@ RELOADABLE_INT = ("lease_ttl_minutes", "max_agent_posts_per_thread_without_human
 RELOADABLE_BOOL = ("require_human_accept", "auto_recover_stalled_work")
 RELOADABLE_WEB = ("session_days", "session_max_days")   # [web] sign-in session lifetimes (weblogin.py)
 WEB_DAYS_MAX = 3650
-RESTART_ONLY = ("host", "port", "db_path", "agents_path")
+RESTART_ONLY = ("host", "port", "public_origin", "db_path", "agents_path")
 
 
 def _file_sig(path) -> tuple | None:
@@ -325,7 +325,7 @@ class Board:
         # Default: human notifications, configured by the human's `subscriptions` rows (off until then).
         self.notifier = notifier if notifier is not None else HumanNotifier(self)
         self._local = threading.local()
-        self._agents_mtime: float | None = None
+        self._agents_sig: tuple | None = None
         self._sync_lock = threading.Lock()
         # Settings hot reload: the files' signatures as of these settings; a bump on every applied reload.
         self._settings_lock = threading.Lock()
@@ -353,9 +353,9 @@ class Board:
     def sync_agents(self, force: bool = False) -> None:
         """Mirror agents.toml into the agents table (agents.toml is the source of truth)."""
         path = self.s.agents_path
-        mtime = path.stat().st_mtime if path.exists() else None
+        signature = _file_sig(path)
         with self._sync_lock:
-            if not force and mtime == self._agents_mtime:
+            if not force and signature == self._agents_sig:
                 return
             specs = read_agents(path)
             now = self.now()
@@ -372,7 +372,7 @@ class Board:
                              token_hash=excluded.token_hash, is_human=excluded.is_human, active=1""",
                         (a.name, a.runtime, a.token_sha256, int(a.is_human), now),
                     )
-            self._agents_mtime = mtime
+            self._agents_sig = signature
 
     # ------------------------------------------------------------ settings hot reload
 
