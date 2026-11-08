@@ -1579,3 +1579,20 @@ thread history. Its indicator stays blue until real agent pickup, then gray;
 overdue unclaimed work remains stuck.
 
 After the proposal-writer upgrade, already-open older connections must refresh before creating any proposal. They receive an explicit refresh-required error; task creation in the same operation rolls back. Ordinary status and request posts remain available. Use a supported fresh connection under the same identity and existing permissions; restarting unrelated apps is unnecessary.
+
+## T-Comms on t-gate
+
+The fork can be served through a loopback HTTPS reverse proxy. Set
+`[server] public_origin = "https://comms.epigen.dev"` in the private
+board.local.toml. Keep the listener on 127.0.0.1 and preserve the public Host
+header in the proxy. Only that configured public origin is accepted; native
+MCP host/origin protection and browser CSRF checks remain enabled. Public
+login links use HTTPS and browser cookies use Secure. Forwarded headers do
+not change the application's loopback peer check. HTTP access logs stay off
+because native one-use sign-in secrets occur in login URL paths.
+
+Use the existing Python 3.12 and uv.lock workflow for development. Each
+project session limits routine reads to that project and directly addressed
+messages; this is context filtering, not a per-token project ACL. Human
+answers and approvals retain the upstream human-only checks. The dispatcher
+is a separate optional process and is not part of the web/MCP deployment.
